@@ -1,0 +1,106 @@
+name: Auto-approve admin PRs (reusable)
+
+# Reusable auto-approve: approve a PR when its author is an active member of the
+# given org team. It ONLY approves — never merges.
+#
+# Two identities, by a hard GitHub constraint:
+#   - Membership read -> a GitHub App token (APP_ID / APP_PRIVATE_KEY).
+#   - The approval     -> WRITE_ACCESS_PAT, a real write-collaborator USER.
+#     GitHub does NOT count an app/bot review toward a ruleset's required-approval
+#     count — only a user-with-write review does.
+#
+# Callers invoke this via
+#   uses: YOUR_ORG/gh-org-guard/.github/workflows/auto-approve.yml@main
+# from a `pull_request_target` trigger. See templates/auto-approve-caller.yml.tmpl.
+
+on:
+  workflow_call:
+    inputs:
+      org:
+        description: Organization that owns the approver team.
+        type: string
+        required: false
+        default: ${{ github.repository_owner }}
+      team:
+        description: Team whose members get auto-approved.
+        type: string
+        required: false
+        default: admins
+    secrets:
+      APP_ID:
+        required: true
+      APP_PRIVATE_KEY:
+        required: true
+      WRITE_ACCESS_PAT:
+        required: true
+
+permissions: {}
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Mint app token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ inputs.org }}
+
+      - name: Check team membership
+        id: member
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          ORG: ${{ inputs.org }}
+          TEAM: ${{ inputs.team }}
+        run: |
+          set -euo pipefail
+          state="$(gh api "orgs/${ORG}/teams/${TEAM}/memberships/${AUTHOR}" \
+                     --jq '.state' 2>/dev/null || true)"
+          if [ "${state}" = "active" ]; then
+            echo "✓ @${AUTHOR} is an active member of @${ORG}/${TEAM}."
+            echo "is_admin=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "↷ @${AUTHOR} is not an active member of @${ORG}/${TEAM} — nothing to do."
+            echo "is_admin=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Approve the PR
+        if: steps.member.outputs.is_admin == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.WRITE_ACCESS_PAT }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ORG: ${{ inputs.org }}
+          TEAM: ${{ inputs.team }}
+        run: |
+          set -euo pipefail
+          ME="$(gh api user --jq '.login')"
+
+          # One approval per PR: skip if this user already has a CURRENT (not
+          # dismissed) approval on the PR — regardless of commit. On repos where
+          # a push dismisses stale reviews, the old approval becomes DISMISSED
+          # (so it won't match here) and we correctly re-approve; on repos that
+          # keep approvals across pushes, we skip and avoid timeline noise.
+          already="$(gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate \
+            --jq "[.[] | select(.user.login==\"${ME}\" and .state==\"APPROVED\")] | length")"
+          if [ "${already}" -gt 0 ]; then
+            echo "↷ Already have a current approval on this PR as @${ME} — skipping."
+            exit 0
+          fi
+
+          if [ "${ME}" = "${AUTHOR}" ]; then
+            echo "↷ Token user (@${ME}) is the PR author — GitHub blocks self-approval; leaving a note."
+            gh pr comment "${PR}" --repo "${REPO}" \
+              --body "Auto-approve skipped: @${AUTHOR} is an admin, but the approver account is the author and GitHub doesn't allow approving your own PR." || true
+            exit 0
+          fi
+
+          gh pr review "${PR}" --repo "${REPO}" --approve \
+            --body "Auto-approved: @${AUTHOR} is a member of @${ORG}/${TEAM}."
+          echo "✓ Approved PR #${PR} as @${ME}."

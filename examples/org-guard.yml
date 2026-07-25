@@ -1,0 +1,61 @@
+# Illustrative config for gh-org-guard.
+#
+# NOTE: the current reference implementation is driven by ENV VARS + the constants
+# at the top of src/reconcile_rulesets.py, not by this file. This example shows
+# the shape a config-driven v2 would consume — it documents every knob in one place
+# so you can see what the reconciler enforces. Adapt the script's constants to match.
+
+org: YOUR_ORG                 # GitHub org login to reconcile (env: ORG)
+dry_run: true                 # true = preview only, change nothing (env: DRY_RUN)
+
+# The reusable baseline ruleset applied to the default branch of every
+# public, active repo. Stacks with any richer per-repo ruleset.
+baseline:
+  name: org-baseline
+  enforcement: active
+  target_branch: "~DEFAULT_BRANCH"
+
+  # Break-glass: org admins can always bypass, so a misconfigured required
+  # check + merge queue can never permanently lock a repo.
+  bypass:
+    - actor: OrganizationAdmin
+      mode: always
+
+  # FLOOR — safe on any repo, can't deadlock a solo owner.
+  floor:
+    block_force_push: true          # rule: non_fast_forward
+    block_deletion: true            # rule: deletion
+    require_pull_request: true
+    require_thread_resolution: true
+    required_approvals: 0
+
+  # REVIEW — FLOOR plus reviews. Applied ONLY once a working auto-approve
+  # caller + CODEOWNERS exist in the repo (else the owner's own PR can't be
+  # approved -> deadlock). Repos without them stay at FLOOR automatically.
+  review:
+    required_approvals: 1
+    require_code_owner_review: true
+
+  # Merge queue settings (rule: merge_queue).
+  merge_queue:
+    merge_method: SQUASH
+    grouping_strategy: ALLGREEN
+    min_entries_to_merge: 1
+    min_entries_to_merge_wait_minutes: 0   # solo org: lone PR merges immediately
+    max_entries_to_build: 5
+    max_entries_to_merge: 5
+    check_response_timeout_minutes: 60
+
+# Files the reconciler scaffolds into each repo (from templates/).
+scaffold:
+  codeowners: true
+  auto_approve_caller: true
+
+# Repo settings made idempotent on every run.
+repo_settings:
+  allow_auto_merge: true
+
+# Auto-approve: PRs by members of this team are approved automatically
+# (by a real write-user, so the approval counts toward required reviews).
+auto_approve:
+  team: admins

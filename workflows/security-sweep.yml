@@ -1,0 +1,105 @@
+name: Org security sweep
+
+# Weekly check that every public repo has secret scanning + push protection on,
+# and that there are no unresolved secret-scanning alerts. Opens (or updates)
+# a tracking issue in this repo if anything needs attention, and auto-closes it
+# when everything is clean.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC — off the hour on purpose
+  workflow_dispatch: {}      # allow manual runs
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: security-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    env:
+      ORG: ${{ github.repository_owner }}
+      SELF: ${{ github.repository }}
+      # PAT with admin:org / security_events / repo scope for full visibility.
+      # Falls back to GITHUB_TOKEN, which cannot read some org security fields.
+      GH_TOKEN: ${{ secrets.ORG_SECURITY_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Run sweep
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## 🔒 Org security sweep — $(date -u '+%Y-%m-%d %H:%M UTC')" > report.md
+          echo "" >> report.md
+
+          problems=0
+
+          # Public, non-archived repos: scanning + push protection must be on.
+          mapfile -t repos < <(gh api "orgs/$ORG/repos?per_page=100&type=public" --paginate \
+            --jq '.[] | select(.archived==false) | .name' | sort)
+
+          echo "### Public repositories checked: ${#repos[@]}" >> report.md
+          echo "" >> report.md
+
+          scan_off=()
+          push_off=()
+          open_alerts=()
+
+          for r in "${repos[@]}"; do
+            s=$(gh api "repos/$ORG/$r" --jq '.security_and_analysis.secret_scanning.status // "unknown"' 2>/dev/null || echo unknown)
+            p=$(gh api "repos/$ORG/$r" --jq '.security_and_analysis.secret_scanning_push_protection.status // "unknown"' 2>/dev/null || echo unknown)
+            [ "$s" != "enabled" ] && scan_off+=("$r ($s)")
+            [ "$p" != "enabled" ] && push_off+=("$r ($p)")
+
+            if [ "$s" = "enabled" ]; then
+              n=$(gh api "repos/$ORG/$r/secret-scanning/alerts?state=open" --jq 'length' 2>/dev/null || echo 0)
+              if [ "${n:-0}" -gt 0 ]; then
+                open_alerts+=("**$r**: $n open alert(s) — https://github.com/$ORG/$r/security/secret-scanning")
+              fi
+            fi
+          done
+
+          emit () {  # $1 = heading, rest = array items
+            local heading="$1"; shift
+            if [ "$#" -gt 0 ]; then
+              problems=$((problems+1))
+              echo "### ⚠️ $heading" >> report.md
+              for i in "$@"; do echo "- $i" >> report.md; done
+              echo "" >> report.md
+            fi
+          }
+
+          emit "Secret scanning OFF"    "${scan_off[@]:-}"
+          emit "Push protection OFF"    "${push_off[@]:-}"
+          emit "Open secret alerts"     "${open_alerts[@]:-}"
+
+          if [ "$problems" -eq 0 ]; then
+            echo "✅ All public repos have secret scanning + push protection on, and no open alerts." >> report.md
+          fi
+
+          cat report.md
+
+          TITLE="🔒 Org security sweep — action needed"
+          existing=$(gh issue list --repo "$SELF" --state open \
+            --search "$TITLE in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+
+          if [ "$problems" -gt 0 ]; then
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$SELF" --body-file report.md
+            else
+              gh issue create --repo "$SELF" --title "$TITLE" \
+                --body-file report.md --label security 2>/dev/null \
+              || gh issue create --repo "$SELF" --title "$TITLE" --body-file report.md
+            fi
+            echo "::warning::Security sweep found $problems category(ies) needing attention."
+          else
+            # All clear — close any stale open issue.
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$SELF" --body "✅ Latest sweep is clean — closing." || true
+              gh issue close "$existing" --repo "$SELF" || true
+            fi
+            echo "All clear."
+          fi
