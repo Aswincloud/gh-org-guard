@@ -33,6 +33,10 @@ ORG = os.environ.get("ORG")
 if not ORG:
     sys.exit("ORG env var is required (the GitHub org login to reconcile).")
 DRY_RUN = os.environ.get("DRY_RUN", "true").strip().lower() != "false"
+# When set (the GitHub Action sets it to the action's bundled templates/ dir),
+# templates load from local disk instead of round-tripping to the org's .github
+# repo. Placeholder org logins in the templates are substituted for the real org.
+TEMPLATES_DIR = os.environ.get("TEMPLATES_DIR")
 BASELINE = "org-baseline"
 SELF = ".github"  # this repo hosts templates + the reusable workflow
 
@@ -149,6 +153,16 @@ def has_file(repo, path, branch):
 
 
 def read_template(path):
+    # Action mode: read the bundled template from local disk (path's basename),
+    # substituting the YOUR_ORG placeholder for the real org login.
+    if TEMPLATES_DIR:
+        local = os.path.join(TEMPLATES_DIR, os.path.basename(path))
+        try:
+            with open(local, encoding="utf-8") as fh:
+                return fh.read().replace("YOUR_ORG", ORG)
+        except OSError:
+            return None
+    # Reference-impl mode: read from the org's .github repo over the API.
     r = gh(f"repos/{ORG}/{SELF}/contents/{path}?ref=main")
     if r.returncode != 0:
         return None

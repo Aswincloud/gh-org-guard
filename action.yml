@@ -1,0 +1,41 @@
+name: 'gh-org-guard'
+description: 'Reconcile a floor-level branch-protection ruleset + merge queue across every public, active repo in a GitHub org. Dry-run by default.'
+author: 'Aswincloud'
+
+# https://github.com/Aswincloud/gh-org-guard
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  org:
+    description: 'GitHub org login to reconcile. Defaults to the owner of the repo running this action.'
+    required: false
+    default: ${{ github.repository_owner }}
+  dry-run:
+    description: 'Preview only ("true", the default) or apply changes ("false"). A misconfigured schedule can never silently rewrite the whole org.'
+    required: false
+    default: 'true'
+  github-token:
+    description: >-
+      Token used for every API call. For a real enforce run it needs, across the
+      org: administration:write (write rulesets), contents:write + workflows:write
+      (scaffold CODEOWNERS + the auto-approve caller), and repo read. A GitHub App
+      installation token (via actions/create-github-app-token) is recommended over
+      a PAT. GITHUB_TOKEN alone is NOT sufficient for cross-repo org writes.
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    # gh + python3 are both pre-installed on GitHub-hosted runners.
+    - name: Reconcile org baseline
+      shell: bash
+      env:
+        ORG: ${{ inputs.org }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        # Load the CODEOWNERS + auto-approve-caller templates bundled with the
+        # action instead of round-tripping to the org's .github repo.
+        TEMPLATES_DIR: ${{ github.action_path }}/templates
+      run: python3 "${{ github.action_path }}/src/reconcile_rulesets.py"

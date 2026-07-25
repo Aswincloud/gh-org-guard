@@ -56,6 +56,54 @@ rulesets, so this only ever *adds* a floor; it never removes a repo's own rules.
 
 ---
 
+## Two ways to run it
+
+**As a GitHub Action** (fastest) — drop this into a workflow in your org's `.github`
+repo. It defaults to **dry-run**, so a first run only prints what it *would* do:
+
+```yaml
+name: Reconcile org baseline
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      dry-run: { type: boolean, default: true }
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: app
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: Aswincloud/gh-org-guard@v1
+        with:
+          org: ${{ github.repository_owner }}
+          # schedule => enforce; manual => whatever you pick (default: true)
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || 'false' }}
+          github-token: ${{ steps.app.outputs.token }}
+```
+
+| Input | Default | Notes |
+|---|---|---|
+| `org` | repo owner | Org login to reconcile |
+| `dry-run` | `true` | `false` to apply changes |
+| `github-token` | — (required) | App installation token; needs `administration:write` + `contents/workflows:write` org-wide for enforce |
+
+`GITHUB_TOKEN` alone can't do cross-repo org writes — mint an **App installation
+token** (as above). See [Setup](#setup) for the App's permissions.
+
+**As a reference implementation** — copy `src/reconcile_rulesets.py` + the
+`workflows/` into your `.github` repo and adapt the constants. This is the shape
+the sections below describe; the Action just bundles it behind `action.yml`.
+
+---
+
 ## The core idea: FLOOR vs REVIEW
 
 The trap in automating org-wide required reviews is the **solo-owner deadlock**:
@@ -114,6 +162,7 @@ self-approve when the token user is the PR author.
 
 ```
 gh-org-guard/
+├── action.yml                    # composite action: `uses: Aswincloud/gh-org-guard@v1`
 ├── src/
 │   └── reconcile_rulesets.py     # the reconciler (~300 lines, env-driven)
 ├── workflows/
