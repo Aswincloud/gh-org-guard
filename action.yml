@@ -1,5 +1,5 @@
 name: 'gh-org-guard'
-description: 'Reconcile a floor-level branch-protection ruleset + merge queue across every public, active repo in a GitHub org. Dry-run by default.'
+description: 'Self-healing branch-protection + merge-queue baseline across every public repo in a GitHub org. Dry-run by default.'
 author: 'Aswincloud'
 
 # https://github.com/Aswincloud/gh-org-guard
