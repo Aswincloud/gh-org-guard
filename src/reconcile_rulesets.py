@@ -2,12 +2,26 @@
 """Reconcile org standards across PUBLIC, ACTIVE repos: baseline ruleset + the
 CODEOWNERS and auto-approve caller files.
 
-Two baselines:
-  FLOOR       — block force-push + deletion, require PR + thread resolution,
-                0 approvals. Safe on any repo; can't deadlock a solo owner.
-  REVIEW      — FLOOR plus 1 approval + code-owner review. Only safe once the
-                repo has a working auto-approve caller (else the owner's own PR
-                can't be approved -> deadlock).
+Two rulesets, deliberately split:
+  org-baseline          — block force-push + deletion, require a PR + thread
+                          resolution, and the MERGE QUEUE. 0 approvals, no
+                          code-owner gate. No bypass actors: this floor binds
+                          everyone, org owners included.
+  org-codeowner-review  — 1 approval + code-owner review. Bypassable by
+                          @ORG/<BYPASS_TEAM>, so those members can hit
+                          "Merge when ready" without code-owner review while
+                          STILL going through the queue and status checks.
+
+Why two rulesets and not one: rules from all matching rulesets aggregate to the
+MOST RESTRICTIVE value. If the baseline also asserted require_code_owner_review
+then bypassing the code-owner ruleset would be cancelled out by the baseline's
+own copy, and the bypass would silently do nothing. The approval + code-owner
+rules must live ONLY in the bypassable ruleset.
+
+Two tiers, as before:
+  FLOOR       — org-baseline only. Safe on any repo; can't deadlock an owner.
+  REVIEW      — FLOOR plus org-codeowner-review. Only applied once the repo has
+                a working auto-approve caller + CODEOWNERS.
 
 Deadlock-safe ordering per repo:
   1. Ensure files (CODEOWNERS + caller). Writing needs the branch to accept a
@@ -38,6 +52,9 @@ DRY_RUN = os.environ.get("DRY_RUN", "true").strip().lower() != "false"
 # repo. Placeholder org logins in the templates are substituted for the real org.
 TEMPLATES_DIR = os.environ.get("TEMPLATES_DIR")
 BASELINE = "org-baseline"
+CODEOWNER_RS = "org-codeowner-review"
+# Members of this team bypass org-codeowner-review (and only that ruleset).
+BYPASS_TEAM = os.environ.get("BYPASS_TEAM", "admins")
 SELF = ".github"  # this repo hosts templates + the reusable workflow
 
 CODEOWNERS_PATHS = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"]
@@ -58,11 +75,14 @@ def gh(path, *extra, method=None, body=None):
                           input=(json.dumps(body) if body is not None else None))
 
 
-def rules(review):
+def baseline_rules():
+    """The floor that binds EVERYONE — no bypass actors. Deliberately carries no
+    approval count and no code-owner gate; those live in codeowner_rules() so a
+    team can be exempted from them without also escaping the merge queue."""
     pr = {
-        "required_approving_review_count": 1 if review else 0,
+        "required_approving_review_count": 0,
         "dismiss_stale_reviews_on_push": False,
-        "require_code_owner_review": bool(review),
+        "require_code_owner_review": False,
         "require_last_push_approval": False,
         "required_review_thread_resolution": True,
     }
@@ -81,33 +101,72 @@ def rules(review):
             {"type": "merge_queue", "parameters": mq}]
 
 
-def payload(review):
+def codeowner_rules():
+    """The review gate, bypassable by @ORG/BYPASS_TEAM. MUST NOT be duplicated
+    into baseline_rules() — see the module docstring on rule aggregation."""
+    return [{"type": "pull_request", "parameters": {
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": False,
+        "require_code_owner_review": True,
+        "require_last_push_approval": False,
+        "required_review_thread_resolution": True,
+    }}]
+
+
+def baseline_payload():
+    # No bypass_actors: the queue + PR requirement bind org owners too. Break-glass
+    # is intentionally NOT granted here — see README. Any richer per-repo ruleset
+    # keeps whatever bypass it defines; this only governs org-baseline.
     return {"name": BASELINE, "target": "branch", "enforcement": "active",
             "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
-            # Break-glass: org admins can bypass (direct/admin-merge) so a
-            # misconfigured required check + merge queue can never permanently
-            # lock a repo. Managed here so the weekly PUT preserves it.
-            "bypass_actors": [{"actor_id": 1, "actor_type": "OrganizationAdmin",
-                               "bypass_mode": "always"}],
-            "rules": rules(review)}
+            "bypass_actors": [],
+            "rules": baseline_rules()}
 
 
-MANAGED = {"deletion": [], "non_fast_forward": [],
-           "pull_request": ["required_approving_review_count",
-                            "require_code_owner_review",
-                            "required_review_thread_resolution"],
-           "merge_queue": ["merge_method", "grouping_strategy",
-                           "min_entries_to_merge",
-                           "min_entries_to_merge_wait_minutes"]}
+def codeowner_payload(team):
+    return {"name": CODEOWNER_RS, "target": "branch", "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+            "bypass_actors": [
+                {"actor_id": 1, "actor_type": "OrganizationAdmin",
+                 "bypass_mode": "always"},
+                {"actor_id": team, "actor_type": "Team", "bypass_mode": "always"},
+            ],
+            "rules": codeowner_rules()}
 
 
-def norm(rs, bypass=None):
+MANAGED_BASELINE = {"deletion": [], "non_fast_forward": [],
+                    "pull_request": ["required_approving_review_count",
+                                     "require_code_owner_review",
+                                     "required_review_thread_resolution"],
+                    "merge_queue": ["merge_method", "grouping_strategy",
+                                    "min_entries_to_merge",
+                                    "min_entries_to_merge_wait_minutes"]}
+
+MANAGED_CODEOWNER = {"pull_request": ["required_approving_review_count",
+                                      "require_code_owner_review"]}
+
+
+def norm(rs, managed, bypass=None):
+    """Comparable fingerprint of the rules we manage plus the exact bypass list.
+    Bypass is compared verbatim (not just 'has an admin') because the whole
+    point of the split is WHO is on the codeowner ruleset's bypass list."""
     by = {r["type"]: (r.get("parameters") or {}) for r in rs}
-    has_admin_bypass = any((b.get("actor_type") == "OrganizationAdmin")
-                           for b in (bypass or []))
+    actors = sorted("{}:{}:{}".format(b.get("actor_type"), b.get("actor_id"),
+                                      b.get("bypass_mode"))
+                    for b in (bypass or []))
     return json.dumps({"rules": {t: ({k: by[t].get(k) for k in ks} if t in by else None)
-                                 for t, ks in MANAGED.items()},
-                       "admin_bypass": has_admin_bypass}, sort_keys=True)
+                                 for t, ks in managed.items()},
+                       "bypass": actors}, sort_keys=True)
+
+
+def team_id(slug):
+    r = gh(f"orgs/{ORG}/teams/{slug}")
+    if r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout).get("id")
+    except (ValueError, AttributeError):
+        return None
 
 
 def skip_reason(repo):
@@ -124,28 +183,43 @@ def skip_reason(repo):
     return None
 
 
-def find_baseline(repo):
+def find_ruleset(repo, name):
     r = gh(f"repos/{ORG}/{repo}/rulesets")
     if r.returncode != 0:
         return None, r.stderr.strip()
     for rs_ in json.loads(r.stdout or "[]"):
-        if rs_.get("name") == BASELINE:
+        if rs_.get("name") == name:
             return json.loads(gh(f"repos/{ORG}/{repo}/rulesets/{rs_['id']}").stdout), None
     return None, None
 
 
-def set_baseline(repo, cur, review):
-    body = payload(review)
-    if cur is None:
-        r = gh(f"repos/{ORG}/{repo}/rulesets", method="POST", body=body)
-    else:
-        r = gh(f"repos/{ORG}/{repo}/rulesets/{cur['id']}", method="PUT", body=body)
-    if r.returncode == 0:
-        return None
+def _rs_err(r):
     e = r.stderr.lower()
     if "administration" in e or "not accessible" in e:
         return "needs App administration:write"
     return r.stderr.strip()[:70]
+
+
+def put_ruleset(repo, cur, body):
+    # NOTE: pre-split, ruleset writes bypassed the DRY_RUN gate entirely — the
+    # module docstring promised "changes nothing" but rulesets were still
+    # POST/PUT'd. Guard both write paths at the choke point.
+    if DRY_RUN:
+        return None
+    if cur is None:
+        r = gh(f"repos/{ORG}/{repo}/rulesets", method="POST", body=body)
+    else:
+        r = gh(f"repos/{ORG}/{repo}/rulesets/{cur['id']}", method="PUT", body=body)
+    return None if r.returncode == 0 else _rs_err(r)
+
+
+def delete_ruleset(repo, cur):
+    if cur is None:
+        return None
+    if DRY_RUN:
+        return None
+    r = gh(f"repos/{ORG}/{repo}/rulesets/{cur['id']}", method="DELETE")
+    return None if r.returncode == 0 else _rs_err(r)
 
 
 def has_file(repo, path, branch):
@@ -239,12 +313,23 @@ def main():
         sys.exit(2)
     repos = sorted((json.loads(x) for x in r.stdout.splitlines() if x.strip()),
                    key=lambda x: x["name"])
+
+    team = team_id(BYPASS_TEAM)
+    if team is None:
+        print(f"cannot resolve @{ORG}/{BYPASS_TEAM} — refusing to write a "
+              f"codeowner ruleset with no bypass list", file=sys.stderr)
+        sys.exit(2)
+    print(f"bypass team: @{ORG}/{BYPASS_TEAM} (id={team})", file=sys.stderr)
+
     tmpl_co = read_template(TMPL_CODEOWNERS)
     tmpl_caller = read_template(TMPL_CALLER)
 
+    want_base = norm(baseline_rules(), MANAGED_BASELINE, [])
+    want_co = norm(codeowner_rules(), MANAGED_CODEOWNER,
+                   codeowner_payload(team)["bypass_actors"])
+
     rows = []
     c = {"review": 0, "floor": 0, "in_sync": 0, "skip": 0, "blocked": 0, "error": 0}
-    want_review = norm(rules(True), [{"actor_type": "OrganizationAdmin"}])
 
     for repo in repos:
         name = repo["name"]
@@ -255,33 +340,49 @@ def main():
             continue
         branch = repo["default_branch"]
         set_note = ensure_repo_settings(name)  # enable allow_auto_merge (idempotent)
-        cur, err = find_baseline(name)
+
+        base, err = find_ruleset(name, BASELINE)
+        if err:
+            c["error"] += 1
+            rows.append((name, "error", err[:50]))
+            continue
+        cors, err = find_ruleset(name, CODEOWNER_RS)
         if err:
             c["error"] += 1
             rows.append((name, "error", err[:50]))
             continue
 
-        # Step 1: ensure files. If repo is at REVIEW but a file is missing, the
-        # write could be blocked by protection — drop to FLOOR first.
+        # Step 1: ensure files. The approval gate lives in CODEOWNER_RS, so that
+        # is the ruleset that can block a direct write — drop it first if a file
+        # is missing, then re-add below once both files are present.
         co_ok = any(has_file(name, p, branch) for p in CODEOWNERS_PATHS)
         caller_ok = has_file(name, CALLER_PATH, branch)
-        if (not co_ok or not caller_ok) and cur is not None:
-            curp = next((r for r in cur.get("rules", []) if r["type"] == "pull_request"), None)
-            if curp and curp["parameters"].get("required_approving_review_count", 0) > 0:
-                if not DRY_RUN:
-                    set_baseline(name, cur, review=False)  # drop to FLOOR to allow writes
-                    cur, _ = find_baseline(name)
+        if (not co_ok or not caller_ok) and cors is not None and not DRY_RUN:
+            delete_ruleset(name, cors)
+            cors = None
 
         co_ok, caller_ok, fnote = ensure_files(name, branch, tmpl_co, tmpl_caller)
         if set_note:  # surface an auto-merge settings change in the report note
             fnote = f"{fnote}; {set_note}".strip("; ") if fnote else set_note
 
-        # Step 2: choose target baseline by whether the auto-approver exists.
+        # Step 2: baseline always; codeowner ruleset only once the auto-approver
+        # exists (otherwise a non-bypass member's PR could never be approved).
         target_review = caller_ok and co_ok
+        was_base = base is not None and \
+            norm(base.get("rules", []), MANAGED_BASELINE, base.get("bypass_actors")) == want_base \
+            and base.get("enforcement") == "active"
+        was_co = cors is not None and \
+            norm(cors.get("rules", []), MANAGED_CODEOWNER, cors.get("bypass_actors")) == want_co \
+            and cors.get("enforcement") == "active"
+
         problem = None
-        if cur is None or norm(cur.get("rules", []), cur.get("bypass_actors")) != norm(rules(target_review), [{"actor_type": "OrganizationAdmin"}]) \
-                or cur.get("enforcement") != "active":
-            problem = set_baseline(name, cur, review=target_review)
+        if not was_base:
+            problem = put_ruleset(name, base, baseline_payload())
+        if not problem:
+            if target_review and not was_co:
+                problem = put_ruleset(name, cors, codeowner_payload(team))
+            elif not target_review and cors is not None:
+                problem = delete_ruleset(name, cors)
 
         if problem:
             c["blocked"] += 1
@@ -289,19 +390,18 @@ def main():
         elif not target_review:
             c["floor"] += 1
             rows.append((name, "FLOOR", fnote or "no auto-approver yet -> floor only"))
+        elif was_base and was_co and fnote in ("", "self"):
+            c["in_sync"] += 1
+            rows.append((name, "in-sync", ""))
         else:
-            # is it already at review with files? classify sync vs changed
-            was_review = cur is not None and norm(cur.get("rules", []), cur.get("bypass_actors")) == want_review
-            noop = fnote in ("", "self")
-            if was_review and noop:
-                c["in_sync"] += 1
-                rows.append((name, "in-sync", ""))
-            else:
-                c["review"] += 1
-                rows.append((name, "REVIEW", fnote or "raised to require-review"))
+            c["review"] += 1
+            rows.append((name, "REVIEW", fnote or "raised to require-review"))
 
     mode = "DRY-RUN (no changes)" if DRY_RUN else "ENFORCE"
-    out = [f"### org reconcile — {mode}", "", "| repo | action | note |", "|---|---|---|"]
+    out = [f"### org reconcile — {mode}", "",
+           f"`{BASELINE}` (no bypass) + `{CODEOWNER_RS}` "
+           f"(bypass: @{ORG}/{BYPASS_TEAM})", "",
+           "| repo | action | note |", "|---|---|---|"]
     out += [f"| {n} | {a} | {x} |" for n, a, x in rows]
     out += ["", f"**review={c['review']} floor={c['floor']} in-sync={c['in_sync']} "
             f"skip={c['skip']} blocked={c['blocked']} error={c['error']}**"]

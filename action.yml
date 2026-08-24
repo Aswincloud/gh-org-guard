@@ -16,6 +16,14 @@ inputs:
     description: 'Preview only ("true", the default) or apply changes ("false"). A misconfigured schedule can never silently rewrite the whole org.'
     required: false
     default: 'true'
+  bypass-team:
+    description: >-
+      Slug of the org team whose members bypass the code-owner review ruleset
+      (org-codeowner-review) — they can "Merge when ready" without code-owner
+      review while still going through the merge queue and required status
+      checks. Everyone else still needs 1 approval + code-owner review.
+    required: false
+    default: 'admins'
   github-token:
     description: >-
       Token used for every API call. For a real enforce run it needs, across the
@@ -34,6 +42,7 @@ runs:
       env:
         ORG: ${{ inputs.org }}
         DRY_RUN: ${{ inputs.dry-run }}
+        BYPASS_TEAM: ${{ inputs.bypass-team }}
         GH_TOKEN: ${{ inputs.github-token }}
         # Load the CODEOWNERS + auto-approve-caller templates bundled with the
         # action instead of round-tripping to the org's .github repo.
