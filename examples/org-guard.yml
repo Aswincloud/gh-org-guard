@@ -8,35 +8,36 @@
 org: YOUR_ORG                 # GitHub org login to reconcile (env: ORG)
 dry_run: true                 # true = preview only, change nothing (env: DRY_RUN)
 
-# The reusable baseline ruleset applied to the default branch of every
-# public, active repo. Stacks with any richer per-repo ruleset.
+# TWO rulesets are applied to the default branch of every public, active repo.
+# Both stack with any richer per-repo ruleset.
+#
+# The split is load-bearing: rules aggregate to the MOST RESTRICTIVE value across
+# all matching rulesets, and bypass is granted per-ruleset (never per-rule). So
+# anything the bypass team must still obey has to live in the ruleset they do NOT
+# bypass. Duplicating require_code_owner_review into `baseline` would silently
+# cancel the bypass out.
+
 baseline:
   name: org-baseline
   enforcement: active
   target_branch: "~DEFAULT_BRANCH"
 
-  # Break-glass: org admins can always bypass, so a misconfigured required
-  # check + merge queue can never permanently lock a repo.
-  bypass:
-    - actor: OrganizationAdmin
-      mode: always
+  # No bypass by default: the queue and PR requirement bind org owners too.
+  # A bad required check must be fixed, not merged past. Add an
+  # OrganizationAdmin always-bypass here if your org wants break-glass.
+  bypass: []
 
-  # FLOOR — safe on any repo, can't deadlock a solo owner.
+  # FLOOR — safe on any repo, can't deadlock a solo owner. Applied unconditionally.
   floor:
     block_force_push: true          # rule: non_fast_forward
     block_deletion: true            # rule: deletion
     require_pull_request: true
     require_thread_resolution: true
-    required_approvals: 0
+    required_approvals: 0           # no approval gate here — see codeowner_review
+    require_code_owner_review: false  # MUST stay false; see note above
 
-  # REVIEW — FLOOR plus reviews. Applied ONLY once a working auto-approve
-  # caller + CODEOWNERS exist in the repo (else the owner's own PR can't be
-  # approved -> deadlock). Repos without them stay at FLOOR automatically.
-  review:
-    required_approvals: 1
-    require_code_owner_review: true
-
-  # Merge queue settings (rule: merge_queue).
+  # Merge queue settings (rule: merge_queue). Lives in the baseline so the
+  # bypass team still goes through it.
   merge_queue:
     merge_method: SQUASH
     grouping_strategy: ALLGREEN
@@ -45,6 +46,27 @@ baseline:
     max_entries_to_build: 5
     max_entries_to_merge: 5
     check_response_timeout_minutes: 60
+
+# REVIEW — created ONLY once a working auto-approve caller + CODEOWNERS exist in
+# the repo (else a non-bypass member's PR can't be approved -> deadlock). Repos
+# without them stay at FLOOR automatically; raising a repo == creating this
+# ruleset, lowering it == deleting it.
+codeowner_review:
+  name: org-codeowner-review
+  enforcement: active
+  target_branch: "~DEFAULT_BRANCH"
+
+  # Members of these actors skip code-owner review entirely — but still hit the
+  # merge queue and required status checks, which live in `baseline` above.
+  bypass:
+    - actor: OrganizationAdmin
+      mode: always
+    - actor: Team
+      slug: admins                  # env: BYPASS_TEAM / action input: bypass-team
+      mode: always
+
+  required_approvals: 1
+  require_code_owner_review: true
 
 # Files the reconciler scaffolds into each repo (from templates/).
 scaffold:

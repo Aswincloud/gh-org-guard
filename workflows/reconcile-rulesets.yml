@@ -1,9 +1,22 @@
 name: Reconcile org baseline rulesets
 
-# Weekly self-healing enforcement of a floor-level branch ruleset ('org-baseline')
-# across every PUBLIC, active repo in the org. It STACKS with any richer per-repo
-# ruleset (merge queue, CODEOWNERS) — GitHub applies all matching rulesets, so
-# this only adds a floor and never removes rules.
+# Weekly self-healing enforcement of TWO branch rulesets across every PUBLIC,
+# active repo in the org:
+#
+#   org-baseline          no bypass. Force-push/deletion block, PR required,
+#                         thread resolution, and the MERGE QUEUE. Binds everyone,
+#                         org owners included.
+#   org-codeowner-review  1 approval + code-owner review. Bypassed by
+#                         @<org>/admins, so those members can "Merge when ready"
+#                         without code-owner review while STILL going through the
+#                         queue and required status checks.
+#
+# The approval/code-owner rules live ONLY in the bypassable ruleset on purpose:
+# rules aggregate to the most restrictive value across all matching rulesets, so
+# duplicating them into org-baseline would silently cancel the bypass out.
+#
+# Still STACKS with any richer per-repo ruleset — GitHub applies all matching
+# rulesets, so this only adds a floor and never removes a repo's own rules.
 #
 # Auth: a GitHub App installed org-wide. For enforce mode the App must hold
 # `administration: write` (to write rulesets) and `contents/workflows: write`
