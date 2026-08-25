@@ -22,10 +22,11 @@ baseline:
   enforcement: active
   target_branch: "~DEFAULT_BRANCH"
 
-  # No bypass by default: the queue and PR requirement bind org owners too.
-  # A bad required check must be fixed, not merged past. Add an
-  # OrganizationAdmin always-bypass here if your org wants break-glass.
-  bypass: []
+  # Break-glass: org admins can bypass this ruleset, so a misconfigured
+  # required check or a jammed merge queue can never permanently lock a repo.
+  bypass:
+    - actor: OrganizationAdmin
+      mode: always
 
   # FLOOR — safe on any repo, can't deadlock a solo owner. Applied unconditionally.
   floor:
@@ -56,14 +57,21 @@ codeowner_review:
   enforcement: active
   target_branch: "~DEFAULT_BRANCH"
 
-  # Members of these actors skip code-owner review entirely — but still hit the
-  # merge queue and required status checks, which live in `baseline` above.
+  # The team skips code-owner review entirely — but still hits the merge queue
+  # and required status checks, which live in `baseline` above.
+  #
+  # mode MUST be "exempt". "always"/"pull_request" grant an OVERRIDE: GitHub then
+  # offers a force-merge that SKIPS the queue, and the green "Merge when ready"
+  # never appears. "exempt" makes the rule not applicable, so the PR reads CLEAN
+  # and takes the normal queued path. Measured: always -> BLOCKED,
+  # pull_request -> BLOCKED, exempt -> CLEAN with zero approvals.
+  #
+  # OrganizationAdmin is deliberately absent here — an "always" actor on this
+  # ruleset would re-offer the force-merge path.
   bypass:
-    - actor: OrganizationAdmin
-      mode: always
     - actor: Team
       slug: admins                  # env: BYPASS_TEAM / action input: bypass-team
-      mode: always
+      mode: exempt
 
   required_approvals: 1
   require_code_owner_review: true

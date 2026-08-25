@@ -40,8 +40,13 @@ team silently dropped from it would otherwise read as in-sync.
 Rules from all matching rulesets aggregate to the **most restrictive** value, and
 bypass is granted **per ruleset, never per rule**. So the only way to let a team
 skip code-owner review while still binding them to the merge queue is to put those
-two things in *different* rulesets and grant bypass on just one. Duplicating the
-code-owner rule into `org-baseline` would cancel the bypass out silently.
+two things in *different* rulesets and list the team on just one. Duplicating the
+code-owner rule into `org-baseline` would cancel the exemption out silently.
+
+The listing must use `bypass_mode: "exempt"`. `always` and `pull_request` grant an
+*override* — GitHub then offers a force-merge that skips the queue, and the green
+"Merge when ready" never appears. `exempt` makes the rule not applicable, so the
+PR is simply CLEAN and takes the normal queued path.
 
 ## Failure modes, by design
 
@@ -49,9 +54,7 @@ code-owner rule into `org-baseline` would cancel the bypass out silently.
   administration:write`, never silently skipped.
 - **No write access to scaffold files** → repo held at FLOOR (mergeable), not
   raised to REVIEW (deadlock-prone).
-- **Misconfigured required check** → **no break-glass by default.** `org-baseline`
-  ships with an empty bypass list, so a bad required check must be fixed or the
-  ruleset edited; it cannot be merged past. Add the `OrganizationAdmin` actor back
-  to `baseline_payload()` if your org prefers the escape hatch.
+- **Misconfigured required check** → org admins bypass `org-baseline`, which owns
+  the queue. That is the break-glass and it is deliberate.
 - **`bypass-team` cannot be resolved** → the run exits non-zero before touching
   anything, rather than writing a code-owner ruleset with an empty bypass list.
