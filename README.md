@@ -48,7 +48,7 @@ Across every **public, active** repo in the org, on a weekly schedule:
 | **Reviews** | 1 approval + code-owner review — *once the repo can be auto-approved* |
 | **Review bypass** | Members of one nominated team (`bypass-team`, default `admins`) skip code-owner review — but **still** go through the queue and required status checks |
 | **Merge queue** | Squash, all-green grouping, solo-owner friendly (no batching wait) |
-| **Break-glass** | **Off by default** — the baseline binds org owners too. See [Design notes](#design-notes-worth-stealing) |
+| **Break-glass** | Org admins can bypass `org-baseline` — a bad required check or a jammed queue can't permanently lock a repo |
 | **Auto-merge capability** | `allow_auto_merge` enabled (you still click "Merge when ready") |
 | **Secret scanning** | Weekly audit: scanning on, push protection on, zero open alerts |
 
@@ -63,13 +63,37 @@ The reconciler writes **two** rulesets per repo, and the split is load-bearing:
 
 | ruleset | bypass | rules |
 |---|---|---|
-| `org-baseline` | **none** | `deletion`, `non_fast_forward`, `merge_queue`, PR required + thread resolution, **0 approvals, no code-owner gate** |
-| `org-codeowner-review` | `OrganizationAdmin` + `Team/<bypass-team>` | **1 approval + `require_code_owner_review`** |
+| `org-baseline` | `OrganizationAdmin` (break-glass) | `deletion`, `non_fast_forward`, `merge_queue`, PR required + thread resolution, **0 approvals, no code-owner gate** |
+| `org-codeowner-review` | `Team/<bypass-team>` — **mode `exempt`** | **1 approval + `require_code_owner_review`** |
 
 Net effect:
 
 - **`bypass-team` members** → 0 approvals, no code-owner review, **queue + status checks still enforced**. They click "Merge when ready" and go straight into the queue.
 - **Everyone else** → 1 approval + code-owner review, then the queue.
+
+### The bypass **mode** is load-bearing
+
+The bypass list has **three** modes, and they are not degrees of the same thing:
+
+| mode | what it means | what the contributor sees |
+|---|---|---|
+| `always` / `pull_request` | the actor may **override** the rule at merge time | *"Merge without waiting for requirements (bypass rules)"* — merges directly and **skips the queue**. The green button never appears. |
+| **`exempt`** | the rule is **not applicable** to the actor | PR reads **CLEAN** → normal green **"Merge when ready"**, through the queue like anyone else |
+
+Merge-queue entry is gated on the pull request *satisfying* the branch's rules. An
+override is not satisfaction — which is why the first two modes can only ever
+produce a force-merge. Measured on live PRs, one variable changed:
+
+```
+always        -> BLOCKED
+pull_request  -> BLOCKED
+exempt        -> CLEAN, zero approvals, require_code_owner_review still enabled
+```
+
+> **Use `exempt`.** Changing it to `always` silently converts "queue like everyone
+> else" into "force-merge past the queue", which is close to the opposite of the
+> intent. `OrganizationAdmin` is deliberately **not** on this ruleset for the same
+> reason: an `always` actor there re-offers the force-merge path.
 
 ### Why not one ruleset with a bypass list?
 
@@ -284,15 +308,17 @@ misclick can't rewrite the whole org.
 
 - **Reconcile, don't configure.** State drifts; a weekly PUT that reasserts the
   desired state is the only thing that stays true.
-- **Break-glass is a deliberate trade, not a default.** Any system that can lock a
-  branch should think about the escape hatch. This one ships with **none** on
-  `org-baseline` — org owners are bound by the queue like everyone else. That is
-  the safer posture and the harsher one: a bad required check has to be *fixed*,
-  not merged past. Add `{"actor_id": 1, "actor_type": "OrganizationAdmin",
-  "bypass_mode": "always"}` to `baseline_payload()` if your org wants the door.
+- **Break-glass is mandatory.** Any system that can lock a branch must leave one
+  door open — here, org admins bypass `org-baseline`, which owns the queue. It was
+  removed once on the theory that the exempt team no longer needed it; that left
+  every repo with no way to merge anything when a required check misbehaved.
 - **Bypass is per-ruleset, never per-rule.** Anything you want to keep enforcing
-  for a bypassing team must live in a ruleset that team does *not* bypass. This is
+  for an exempted team must live in a ruleset that team is not listed on. This is
   the single constraint that dictates the two-ruleset shape.
+- **Enumerate the enum.** The whole design was nearly abandoned as impossible
+  because only two of the three bypass modes were tried. Four careful experiments
+  on a false premise still produce a false conclusion — check the option list
+  before concluding the option doesn't exist.
 - **Least-privilege secret passing.** Callers pass *only* the three secrets the
   reusable workflow declares — never `secrets: inherit`, which would leak every
   org secret into a workflow that shouldn't see them.
