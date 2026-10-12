@@ -10,7 +10,7 @@ name: Auto-approve admin PRs (reusable)
 #     count — only a user-with-write review does.
 #
 # Callers invoke this via
-#   uses: YOUR_ORG/gh-org-guard/.github/workflows/auto-approve.yml@main
+#   uses: YOUR_ORG/gh-org-guard/.github/workflows/auto-approve.yml@b8ba4b8b617314291c0dbd5470e6f1fa1a788696 # v1
 # from a `pull_request_target` trigger. See templates/auto-approve-caller.yml.tmpl.
 
 on:

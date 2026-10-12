@@ -131,14 +131,14 @@ jobs:
   reconcile:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - uses: Aswincloud/gh-org-guard@v1
+      - uses: Aswincloud/gh-org-guard@b8ba4b8b617314291c0dbd5470e6f1fa1a788696 # v1
         with:
           org: ${{ github.repository_owner }}
           # schedule => enforce; manual => whatever you pick (default: true)
@@ -233,7 +233,7 @@ self-approve when the token user is the PR author.
 
 ```
 gh-org-guard/
-├── action.yml                    # composite action: `uses: Aswincloud/gh-org-guard@v1`
+├── action.yml                    # composite action: `uses: Aswincloud/gh-org-guard@b8ba4b8b617314291c0dbd5470e6f1fa1a788696`
 ├── src/
 │   └── reconcile_rulesets.py     # the reconciler (~300 lines, env-driven)
 ├── workflows/
