@@ -72,9 +72,9 @@ jobs:
             fi
           }
 
-          emit "Secret scanning OFF"    "${scan_off[@]:-}"
-          emit "Push protection OFF"    "${push_off[@]:-}"
-          emit "Open secret alerts"     "${open_alerts[@]:-}"
+          emit "Secret scanning OFF"    "${scan_off[@]}"
+          emit "Push protection OFF"    "${push_off[@]}"
+          emit "Open secret alerts"     "${open_alerts[@]}"
 
           if [ "$problems" -eq 0 ]; then
             echo "✅ All public repos have secret scanning + push protection on, and no open alerts." >> report.md
