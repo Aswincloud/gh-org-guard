@@ -255,8 +255,6 @@ def delete_ruleset(repo, cur):
         return None
     if DRY_RUN:
         return None
-    if DRY_RUN:
-        return None
     r = gh(f"repos/{ORG}/{repo}/rulesets/{cur['id']}", method="DELETE")
     return None if r.returncode == 0 else _rs_err(r)
 
