@@ -110,7 +110,7 @@ def codeowner_rules():
     into baseline_rules() — see the module docstring on rule aggregation."""
     return [{"type": "pull_request", "parameters": {
         "required_approving_review_count": 1,
-        "dismiss_stale_reviews_on_push": False,
+        "dismiss_stale_reviews_on_push": True,
         "require_code_owner_review": True,
         "require_last_push_approval": False,
         "required_review_thread_resolution": True,
@@ -169,7 +169,8 @@ MANAGED_BASELINE = {"deletion": [], "non_fast_forward": [],
                                     "min_entries_to_merge_wait_minutes"]}
 
 MANAGED_CODEOWNER = {"pull_request": ["required_approving_review_count",
-                                      "require_code_owner_review"]}
+                                      "require_code_owner_review",
+                                      "dismiss_stale_reviews_on_push"]}
 
 
 def _actor_key(b):

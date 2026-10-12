@@ -82,13 +82,10 @@ jobs:
           set -euo pipefail
           ME="$(gh api user --jq '.login')"
 
-          # One approval per PR: skip if this user already has a CURRENT (not
-          # dismissed) approval on the PR — regardless of commit. On repos where
-          # a push dismisses stale reviews, the old approval becomes DISMISSED
-          # (so it won't match here) and we correctly re-approve; on repos that
-          # keep approvals across pushes, we skip and avoid timeline noise.
+          # One approval per commit: skip if this user already approved the
+          # current head. The ruleset also dismisses stale approvals on push.
           already="$(gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate \
-            --jq "[.[] | select(.user.login==\"${ME}\" and .state==\"APPROVED\")] | length")"
+            --jq "[.[] | select(.user.login==\"${ME}\" and .state==\"APPROVED\" and .commit_id==\"${HEAD_SHA}\")] | length")"
           if [ "${already}" -gt 0 ]; then
             echo "↷ Already have a current approval on this PR as @${ME} — skipping."
             exit 0
